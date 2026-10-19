@@ -1,0 +1,60 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: byJoey/yx-auto
+  UPSTREAM_BRANCH: main
+  TARGET_BRANCH: main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+          # GITHUB_TOKEN cannot push commits that modify .github/workflows;
+          # set a PAT with `workflow` scope as SYNC_TOKEN if upstream touches workflows.
+          token: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream "${UPSTREAM_BRANCH}"
+
+      - name: Check for updates
+        id: check
+        run: |
+          behind=$(git rev-list --count "HEAD..upstream/${UPSTREAM_BRANCH}")
+          echo "behind=${behind}" >> "$GITHUB_OUTPUT"
+          echo "${TARGET_BRANCH} is ${behind} commit(s) behind ${UPSTREAM_REPO}@${UPSTREAM_BRANCH}"
+
+      - name: Merge and push
+        if: steps.check.outputs.behind != '0'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git merge --no-edit "upstream/${UPSTREAM_BRANCH}"; then
+            git merge --abort
+            echo "::error::Merge conflict with ${UPSTREAM_REPO}@${UPSTREAM_BRANCH}; resolve manually."
+            exit 1
+          fi
+          git push origin "HEAD:${TARGET_BRANCH}"
+          echo "Synced ${{ steps.check.outputs.behind }} commit(s) from upstream." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Up to date
+        if: steps.check.outputs.behind == '0'
+        run: echo "Already up to date with upstream." >> "$GITHUB_STEP_SUMMARY"
